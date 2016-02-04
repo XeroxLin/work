@@ -1,0 +1,14 @@
+#!/bin/sh
+
+if [ $# -eq 1 ]; then
+	echo Searching [$1]
+	grep "$1" ./ -nr --color
+elif [ $# -eq 2 ]; then
+	echo Searching [$1] with *.$2
+	find ./ -iname \*.$2 | xargs grep --color -nr $1
+else
+	echo "$0: command format failed"
+	echo "" 
+	echo "$0 [pattern]           # Search the pattern in all sub-dir"
+	echo "$0 [pattern] [suffix]  # Search the pattern only with '*.suffix' in all sub-dir"
+fi

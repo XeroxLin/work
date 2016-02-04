@@ -1,0 +1,11 @@
+#!/bin/sh
+
+if [ $# -eq 1 ]; then
+	echo unzip [$1]
+	find ./ -iname \*$1* | xargs --no-run-if-empty -i mv {} {}.gz
+	find ./ -iname \*.gz | xargs --no-run-if-empty gzip -d
+else
+	echo "$0: command format failed"
+	echo "" 
+	echo "$0 [pattern]           # unzip the pattern file"
+fi
