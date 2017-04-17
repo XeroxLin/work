@@ -51,6 +51,17 @@ int check_tcp_packet(const u_char* packet) {
 	return 1;
 }
 
+int check_ftd_packet(const u_char* packet, int payload_len) {
+	int ftd_len = 4;
+	int ftd_ext_cmd_len = 0;
+	int ftd_data_len = 0;
+
+	ftd_ext_cmd_len = *(packet+1) & 0x7F;
+	ftd_data_len = ((*(packet+2) & 0x1F) << 4) | (*(packet+3) & 0xFF);
+
+	return payload_len == ftd_len + ftd_ext_cmd_len + ftd_data_len?1:0;
+}
+
 void ftd_packet_handler(u_char* args, const struct pcap_pkthdr *header, const u_char* packet) {
 	int payload_len;
 	static int packet_cnt = 0;
@@ -64,10 +75,13 @@ void ftd_packet_handler(u_char* args, const struct pcap_pkthdr *header, const u_
 	payload_len = trim_payload(packet, header->caplen, &payload_packet);
 	if (payload_len <= 0)
 		return;
-	if (*payload_packet == 0x01) {
-		printf("FTDTypeFTDC at No.%d\n", packet_cnt);
-	} else if (*payload_packet == 0x02) {
-		printf("FTDTypeCompressed at No.%d\n", packet_cnt);
+
+	if(check_ftd_packet(payload_packet, payload_len)) {
+		if (*payload_packet == 0x01) {
+			printf("FTDTypeFTDC at No.%d\n", packet_cnt);
+		} else if (*payload_packet == 0x02) {
+			printf("FTDTypeCompressed at No.%d\n", packet_cnt);
+		}
 	}
 	return;
 }
