@@ -6,6 +6,8 @@
 #define ETH_HEADER_LEN 14 
 #define IP_HEADER_PROTOCOL_BYTE 9 
 #define TCP_HEADER_LEN_BYTE 12
+#define FTDTypeFTDC  0x01
+#define FTDTypeCompressed  0x02
 
 int trim_payload(const u_char* packet,
 			int caplen,
@@ -52,14 +54,65 @@ int check_tcp_packet(const u_char* packet) {
 }
 
 int check_ftd_packet(const u_char* packet, int payload_len) {
-	int ftd_len = 4;
+	int ftd_header_len = 4;
 	int ftd_ext_cmd_len = 0;
 	int ftd_data_len = 0;
 
 	ftd_ext_cmd_len = *(packet+1) & 0x7F;
 	ftd_data_len = ((*(packet+2) & 0x1F) << 4) | (*(packet+3) & 0xFF);
 
-	return payload_len == ftd_len + ftd_ext_cmd_len + ftd_data_len?1:0;
+	return (payload_len == ftd_header_len + ftd_ext_cmd_len + ftd_data_len)?1:0;
+}
+
+int decompress_ftdc(const u_char* ori_packet, u_char* de_data, int ftd_data_len) {
+	int ftdc_len = 0;
+	int i, j;
+
+	for(i = 0, j = 0; i < ftd_data_len; i++, j++, ftdc_len++) {
+		if((ori_packet[i] < 0xe0) | (ori_packet[i] > 0xef)) {
+			de_data[j] = ori_packet[i];
+		} else {
+			if(ori_packet[i] == 0xe0) {
+				i++;
+				de_data[j] = ori_packet[i];
+			} else if (ori_packet[i] == 0xe1){
+				continue;
+			} else {
+				ftdc_len += ori_packet[i] - 0xe1;
+				j += ori_packet[i] - 0xe1;
+			}
+		}
+	}
+	//printf("%x %x %x %x ", *de_data, *(de_data + 1), *(de_data + 2), *(de_data + 3));
+	return ftdc_len;
+}
+
+void parse_ftdc(const u_char* packet, int payload_len) {
+	const u_char* ftd_data;
+	//u_char* de_ftdc_data;
+	u_char de_ftdc_data[4096];
+	int ftd_ext_cmd_len = 0;
+	int ftd_data_len = 0;
+	int de_ftdc_len = 0;
+	int i;
+
+	ftd_ext_cmd_len = *(packet+1) & 0x7F;
+	ftd_data_len = ((*(packet+2) & 0x1F) << 4) | (*(packet+3) & 0xFF);
+
+	ftd_data = (packet + 4 + ftd_ext_cmd_len);
+	//printf("%x %x %x %x ", *ftd_data, *(ftd_data + 1), *(ftd_data + 2), *(ftd_data + 3));
+
+	de_ftdc_len = decompress_ftdc(ftd_data, de_ftdc_data, ftd_data_len);
+	printf("de_ftdc_len=%d\n", de_ftdc_len);
+	for(i = 0; i < de_ftdc_len; i++) {
+		printf("%x ", *(de_ftdc_data + i));
+		if((i % 10) == 0)
+			printf("\n");
+	}
+	//printf("%x %x %x %x ", *de_ftdc_data, *(de_ftdc_data + 1), *(de_ftdc_data + 2), *(de_ftdc_data + 3));
+
+	printf("\n");
+	return;
 }
 
 void ftd_packet_handler(u_char* args, const struct pcap_pkthdr *header, const u_char* packet) {
@@ -76,12 +129,19 @@ void ftd_packet_handler(u_char* args, const struct pcap_pkthdr *header, const u_
 	if (payload_len <= 0)
 		return;
 
-	if(check_ftd_packet(payload_packet, payload_len)) {
-		if (*payload_packet == 0x01) {
-			printf("FTDTypeFTDC at No.%d\n", packet_cnt);
-		} else if (*payload_packet == 0x02) {
+	if(!check_ftd_packet(payload_packet, payload_len))
+		return;
+
+	switch(*payload_packet) {
+		case FTDTypeCompressed:
 			printf("FTDTypeCompressed at No.%d\n", packet_cnt);
-		}
+			parse_ftdc(payload_packet, payload_len);
+			break;
+		case FTDTypeFTDC:
+			printf("FTDTypeFTDC at No.%d\n", packet_cnt);
+			break;
+		default:
+			break;
 	}
 	return;
 }
