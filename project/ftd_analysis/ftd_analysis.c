@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <pcap.h>
 #include <netinet/in.h>
 #include <net/ethernet.h>
@@ -29,6 +31,7 @@
 
 #define ASCII_SPACE 0x20
 #define ASCII_ZERO 0x30
+#define ASCII_NINE 0x39
 
 /* Trim to payload from the packets */
 int trim_payload(const u_char* packet, int caplen,
@@ -79,20 +82,25 @@ int check_tcp_packet(const u_char* packet) {
 	return 1;
 }
 
-/*
- * Check whether packet is FTD
- * Calculate the packet length from FTD header
- * The FTD length should equal to payload length
- */
-int check_ftd_packet(const u_char* packet, int payload_len) {
-	int ftd_header_len = 4;
-	int ftd_ext_cmd_len = 0;
-	int ftd_data_len = 0;
+int check_ftdc_len(const u_char* packet) {
+	u_char temp[18] = {0};
+	int i, j;
 
-	ftd_ext_cmd_len = *(packet+1) & 0x7F;
-	ftd_data_len = ((*(packet+2) & 0x1F) << 8) | (*(packet+3) & 0xFF);
-
-	return (payload_len == ftd_header_len + ftd_ext_cmd_len + ftd_data_len)?1:0;
+	for(i = 4, j = 0; j < 18; i++, j++) {
+		if((packet[i] < 0xe0) | (packet[i] > 0xef)) {
+			temp[j] = packet[i];
+		} else {
+			if(packet[i] == 0xe0) {
+				i++;
+				temp[j] = packet[i];
+			} else if (packet[i] == 0xe1){
+				continue;
+			} else {
+				j += (packet[i] - 0xe1);
+			}
+		}
+	}
+	return (temp[12] << 8) | (temp[13]);
 }
 
 /*
@@ -102,11 +110,16 @@ int check_ftd_packet(const u_char* packet, int payload_len) {
  * If native value during 0xe0~0xef, it will add 0xe0 behind it.
  * The 0xe6 will compress to '0xe0 0xe6'
  */
-int decompress_ftdc(const u_char* ori_packet, u_char* de_data, int ftd_data_len) {
+u_char* decompress_ftdc(const u_char* ori_packet, int ftd_data_len) {
 	int ftdc_len = 0;
 	int i, j;
+	u_char* de_data = NULL;
 
-	for(i = 0, j = 0; i < ftd_data_len; i++, j++, ftdc_len++) {
+	ftdc_len = check_ftdc_len(ori_packet) + FTD_HEADER_LEN;
+	de_data = malloc(sizeof(u_char)*ftdc_len);
+	memset(de_data, 0, sizeof(u_char)*ftdc_len);
+
+	for(i = 0, j = 0; i < ftd_data_len; i++, j++) {
 		if((ori_packet[i] < 0xe0) | (ori_packet[i] > 0xef)) {
 			de_data[j] = ori_packet[i];
 		} else {
@@ -116,18 +129,17 @@ int decompress_ftdc(const u_char* ori_packet, u_char* de_data, int ftd_data_len)
 			} else if (ori_packet[i] == 0xe1){
 				continue;
 			} else {
-				ftdc_len += (ori_packet[i] - 0xe1);
 				j += (ori_packet[i] - 0xe1);
 			}
 		}
 	}
-	return ftdc_len;
+	return de_data;
 }
 
 /* parse information from CFTDOrderField */
 void parseOrderStatusField(const u_char* field_packet) {
 	FILE *fd;
-	int i = 0, float_check = 0;
+	int i = 0, redundant_zero_check = 0;
 
 	fd = fopen(OUTPUT_FILE, "a");
 
@@ -138,11 +150,16 @@ void parseOrderStatusField(const u_char* field_packet) {
 	}
 	fprintf(fd, ",");
 
-	for(i = 0, float_check = 0; i < FID_OrderStatusField_LimitPrice_LEN; i++) {
-		if((i < 9) && (float_check == 0) && *(field_packet + FID_OrderStatusField_LimitPrice + i) == ASCII_ZERO)
+	for(i = 0, redundant_zero_check = 0; i < FID_OrderStatusField_LimitPrice_LEN; i++) {
+		if((*(field_packet + FID_OrderStatusField_LimitPrice + i) < ASCII_ZERO)
+			||(*(field_packet + FID_OrderStatusField_LimitPrice + i) > ASCII_NINE))
 			continue;
+
+		if((i < 9) && (redundant_zero_check == 0) && *(field_packet + FID_OrderStatusField_LimitPrice + i) == ASCII_ZERO)
+			continue;
+
 		if(i == 10)
-			fprintf(fd, ",");
+			fprintf(fd, ".");
 		fprintf(fd, "%c", *(field_packet + FID_OrderStatusField_LimitPrice + i));
 	}
 	fprintf(fd, ",");
@@ -156,7 +173,7 @@ void parseOrderStatusField(const u_char* field_packet) {
 }
 
 /* dump and analysis packet */
-void dump(const u_char* de_ftdc_data) {
+void dump(u_char* de_ftdc_data) {
 	int i = 0, j, k, fieldcnt, fieldlen;
 
 	printf("Version: %02x\n", *(de_ftdc_data + i++));
@@ -194,39 +211,54 @@ void dump(const u_char* de_ftdc_data) {
 
 /* parse FTDC packet */
 void parse_ftdc(const u_char* packet, int payload_len) {
-	const u_char* pFTD;
-	const u_char* pFID;
-	u_char de_ftdc_data[4096] = {0};
+	const u_char* pFTD = NULL;
+	const u_char* pFID = NULL;
+	u_char* de_ftdc_data = NULL;
 	int ftd_ext_cmd_len = 0;
 	int ftd_data_len = 0;
-	int de_ftdc_len = 0;
 	int fieldCnt = 0;
 	int field_len = 0;
 	int i = 0;
 
-	ftd_ext_cmd_len = *(packet+1) & 0x7F;
-	ftd_data_len = ((*(packet+2) & 0x1F) << 8) | (*(packet+3) & 0xFF);
+	do {
+		if(pFTD != NULL)
+			pFTD = pFTD + ftd_data_len;
+		ftd_ext_cmd_len = *(packet+1) & 0x7F;
+		ftd_data_len = ((*(packet+2) & 0x1F) << 8) | (*(packet+3) & 0xFF);
 
-	pFTD = (packet + 4 + ftd_ext_cmd_len);
+		pFTD = (packet + 4 + ftd_ext_cmd_len);
 
-	de_ftdc_len = decompress_ftdc(pFTD, de_ftdc_data, ftd_data_len);
+		payload_len = payload_len - 4 - ftd_ext_cmd_len - ftd_data_len;
 
-	if(DEBUG)
-		dump(de_ftdc_data);
-
-	fieldCnt = (*(de_ftdc_data + FTDC_FieldCnt_BYTE_H) << 8) | (*(de_ftdc_data + FTDC_FieldCnt_BYTE_L));
-
-	pFID = de_ftdc_data + FTD_HEADER_LEN;
-
-	for(i = 0; i < fieldCnt ; i++) {
-		pFID = pFID + field_len;
-		if((*(pFID) == FID_OrderStatusField_H)
-			&& (*(pFID + 1) == FID_OrderStatusField_L)) {
-			parseOrderStatusField(pFID);
+		if(payload_len < 0) {
+			if(DEBUG)
+				printf("Data broken\n");
+			return;
 		}
-		field_len = (*(pFID + 2) << 8) | (*(pFID + 3)) + 4;
-	}
 
+		//assign pointer to next packet
+		packet = packet + 4 + ftd_ext_cmd_len + ftd_data_len;
+
+		de_ftdc_data = decompress_ftdc(pFTD, ftd_data_len);
+
+		if(DEBUG)
+			dump(de_ftdc_data);
+
+		fieldCnt = (*(de_ftdc_data + FTDC_FieldCnt_BYTE_H) << 8) | (*(de_ftdc_data + FTDC_FieldCnt_BYTE_L));
+
+		pFID = de_ftdc_data + FTD_HEADER_LEN;
+
+		for(i = 0, field_len = 0; i < fieldCnt ; i++) {
+			pFID = pFID + field_len;
+			if((*(pFID) == FID_OrderStatusField_H)
+					&& (*(pFID + 1) == FID_OrderStatusField_L)) {
+				parseOrderStatusField(pFID);
+			}
+			field_len = (*(pFID + 2) << 8) | (*(pFID + 3)) + 4;
+		}
+		free(de_ftdc_data);
+		de_ftdc_data = NULL;
+	} while(payload_len > 0);
 	return;
 }
 
@@ -244,18 +276,15 @@ void ftd_packet_handler(u_char* args, const struct pcap_pkthdr *header, const u_
 	if (payload_len <= 0)
 		return;
 
-	if(!check_ftd_packet(payload_packet, payload_len))
-		return;
-
 	switch(*payload_packet) {
 		case FTDTypeCompressed:
 			if(DEBUG)
-				printf("FTDTypeCompressed at No.%d\n", packet_cnt);
+				printf("FTDTypeCompressed at No.%d  payload_len=%d\n", packet_cnt, payload_len);
 			parse_ftdc(payload_packet, payload_len);
 			break;
 		case FTDTypeFTDC:
 			if(DEBUG)
-				printf("FTDTypeFTDC at No.%d\n", packet_cnt);
+				printf("FTDTypeFTDC at No.%d  payload_len=%d\n", packet_cnt, payload_len);
 			break;
 		default:
 			break;
