@@ -19,17 +19,18 @@
 #define FTDC_FieldCnt_BYTE_H 14
 #define FTDC_FieldCnt_BYTE_L 15
 #define FID_OrderStatusField_OrderStatus 175
-#define FID_OrderStatusField_UserOrderLocalID 26
-#define FID_OrderStatusField_UserOrderLocalID_LEN 12
+#define FID_OrderStatusField_UserOrderLocalID 50
+#define FID_OrderStatusField_UserOrderLocalID_LEN 8
 #define FID_OrderStatusField_LimitPrice 156
-#define FID_OrderStatusField_LimitPrice_LEN 14
+#define FID_OrderStatusField_LimitPrice_LEN 12
 #define FID_OrderStatusField_Direction 109
-#define FID_OrderStatusField_InstrumentID 50
-#define FID_OrderStatusField_InstrumentID_LEN 8
+#define FID_OrderStatusField_InstrumentID 77
+#define FID_OrderStatusField_InstrumentID_LEN 30
 #define FID_OrderStatusField_H 0x25
 #define FID_OrderStatusField_L 0x08
 
 #define ASCII_SPACE 0x20
+#define ASCII_NULL 0x00
 #define ASCII_ZERO 0x30
 #define ASCII_NINE 0x39
 
@@ -145,7 +146,7 @@ void parseOrderStatusField(const u_char* field_packet) {
 
 	fprintf(fd, "%c,", (*(field_packet + FID_OrderStatusField_OrderStatus)));
 	for(i = 0; i < FID_OrderStatusField_UserOrderLocalID_LEN; i++) {
-		if(*(field_packet + FID_OrderStatusField_UserOrderLocalID + i) != ASCII_SPACE)
+		if(*(field_packet + FID_OrderStatusField_UserOrderLocalID + i) != ASCII_NULL)
 			fprintf(fd, "%c", *(field_packet + FID_OrderStatusField_UserOrderLocalID + i));
 	}
 	fprintf(fd, ",");
@@ -155,18 +156,20 @@ void parseOrderStatusField(const u_char* field_packet) {
 			||(*(field_packet + FID_OrderStatusField_LimitPrice + i) > ASCII_NINE))
 			continue;
 
-		if((i < 9) && (redundant_zero_check == 0) && *(field_packet + FID_OrderStatusField_LimitPrice + i) == ASCII_ZERO)
+		if((i < 7) && (redundant_zero_check == 0) && *(field_packet + FID_OrderStatusField_LimitPrice + i) == ASCII_ZERO)
 			continue;
 
-		if(i == 10)
+		if(i == 8)
 			fprintf(fd, ".");
 		fprintf(fd, "%c", *(field_packet + FID_OrderStatusField_LimitPrice + i));
 	}
 	fprintf(fd, ",");
 
 	fprintf(fd, "%c,", *(field_packet + FID_OrderStatusField_Direction));
-	for(i = 0; i < FID_OrderStatusField_InstrumentID_LEN; i++)
-		fprintf(fd, "%c", *(field_packet + FID_OrderStatusField_InstrumentID + i));
+	for(i = 0; i < FID_OrderStatusField_InstrumentID_LEN; i++) {
+		if(*(field_packet + FID_OrderStatusField_InstrumentID + i) != ASCII_NULL)
+			fprintf(fd, "%c", *(field_packet + FID_OrderStatusField_InstrumentID + i));
+	}
 	fprintf(fd, "\n");
 
 	fclose(fd);
